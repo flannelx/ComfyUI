@@ -12,7 +12,12 @@ def prepare_noise(latent_image, seed, noise_inds=None):
     """
     generator = torch.manual_seed(seed)
     if noise_inds is None:
-        return torch.randn(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, generator=generator, device="cpu")
+        #return torch.randn(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, generator=generator, device="cpu")
+        noises = []
+        for i in range(list(latent_image.size())[0]):
+            noise = torch.randn([1] + list(latent_image.size())[1:], dtype=latent_image.dtype, layout=latent_image.layout, generator=torch.manual_seed(seed+i), device="cpu")
+            noises.append(noise)
+        return torch.cat(noises, axis=0)
     
     unique_inds, inverse = np.unique(noise_inds, return_inverse=True)
     noises = []

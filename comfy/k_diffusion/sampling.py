@@ -70,8 +70,8 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
     return sigma_down, sigma_up
 
 
-def default_noise_sampler(x):
-    return lambda sigma, sigma_next: torch.randn_like(x)
+def default_noise_sampler(x, seed=None):
+    return lambda sigma, sigma_next, i=None: torch.randn_like(x) if seed is None else torch.cat([torch.randn([1] + list(x.size())[1:], generator=torch.manual_seed(seed+(i or 0)+j), device="cpu") for j in range(list(x.size())[0])], axis=0).to(x.device)
 
 
 class BatchedBrownianTree:
@@ -129,6 +129,8 @@ class BrownianTreeNoiseSampler:
     def __init__(self, x, sigma_min, sigma_max, seed=None, transform=lambda x: x, cpu=False):
         self.transform = transform
         t0, t1 = self.transform(torch.as_tensor(sigma_min)), self.transform(torch.as_tensor(sigma_max))
+        if seed is not None:
+            seed = [seed + i for i in range((x.size())[0])]
         self.tree = BatchedBrownianTree(x, t0, t1, seed, cpu=cpu)
 
     def __call__(self, sigma, sigma_next):
@@ -168,7 +170,7 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         return sample_euler_ancestral_RF(model, x, sigmas, extra_args, callback, disable, eta, s_noise, noise_sampler)
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -180,14 +182,14 @@ def sample_euler_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
         dt = sigma_down - sigmas[i]
         x = x + d * dt
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * sigma_up
     return x
 
 @torch.no_grad()
 def sample_euler_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1.0, s_noise=1., noise_sampler=None):
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -204,7 +206,7 @@ def sample_euler_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
         sigma_down_i_ratio = sigma_down / sigmas[i]
         x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised
         if sigmas[i + 1] > 0 and eta > 0:
-            x = (alpha_ip1/alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * renoise_coeff
+            x = (alpha_ip1/alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * renoise_coeff
     return x
 
 @torch.no_grad()
@@ -282,7 +284,7 @@ def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None,
 def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with DPM-Solver second-order steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -303,7 +305,7 @@ def sample_dpm_2_ancestral(model, x, sigmas, extra_args=None, callback=None, dis
             denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
             d_2 = to_d(x_2, sigma_mid, denoised_2)
             x = x + d_2 * dt_2
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * sigma_up
     return x
 
 
@@ -459,7 +461,7 @@ class DPMSolver(nn.Module):
             else:
                 x, eps_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=eps_cache)
 
-            x = x + su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next))
+            x = x + su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next), i)
 
         return x
 
@@ -551,7 +553,7 @@ def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, 
 
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
@@ -577,7 +579,7 @@ def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, 
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_2
         # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * sigma_up
     return x
 
 
@@ -585,7 +587,7 @@ def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, 
 def sample_dpmpp_2s_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda lbda: (lbda.exp() + 1) ** -1
     lambda_fn = lambda sigma: ((1-sigma)/sigma).log()
@@ -626,7 +628,7 @@ def sample_dpmpp_2s_ancestral_RF(model, x, sigmas, extra_args=None, callback=Non
             # print("sigma_i", sigmas[i], "sigma_ip1", sigmas[i+1],"sigma_down", sigma_down, "sigma_down_i_ratio", sigma_down_i_ratio, "sigma_s_i_ratio", sigma_s_i_ratio, "renoise_coeff", renoise_coeff)
         # Noise addition
         if sigmas[i + 1] > 0 and eta > 0:
-            x = (alpha_ip1/alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * renoise_coeff
+            x = (alpha_ip1/alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * renoise_coeff
         # logged_x = torch.cat((logged_x, x.unsqueeze(0)), dim=0)
     return x
 
@@ -842,7 +844,7 @@ def DDPMSampler_step(x, sigma, sigma_prev, noise, noise_sampler):
 
 def generic_step_sampler(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None, step_function=None):
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
 
     for i in trange(len(sigmas) - 1, disable=disable):
@@ -862,7 +864,7 @@ def sample_ddpm(model, x, sigmas, extra_args=None, callback=None, disable=None, 
 @torch.no_grad()
 def sample_lcm(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None):
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -871,7 +873,7 @@ def sample_lcm(model, x, sigmas, extra_args=None, callback=None, disable=None, n
 
         x = denoised
         if sigmas[i + 1] > 0:
-            x = model.inner_model.inner_model.model_sampling.noise_scaling(sigmas[i + 1], noise_sampler(sigmas[i], sigmas[i + 1]), x)
+            x = model.inner_model.inner_model.model_sampling.noise_scaling(sigmas[i + 1], noise_sampler(sigmas[i], sigmas[i + 1], i), x)
     return x
 
 
@@ -1113,7 +1115,7 @@ def sample_euler_cfg_pp(model, x, sigmas, extra_args=None, callback=None, disabl
 def sample_euler_ancestral_cfg_pp(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
 
     temp = [0]
     def post_cfg_function(args):
@@ -1133,13 +1135,13 @@ def sample_euler_ancestral_cfg_pp(model, x, sigmas, extra_args=None, callback=No
         # Euler method
         x = denoised + d * sigma_down
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * sigma_up
     return x
 @torch.no_grad()
 def sample_dpmpp_2s_ancestral_cfg_pp(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    noise_sampler = default_noise_sampler(x, extra_args.get("seed")) if noise_sampler is None else noise_sampler
 
     temp = [0]
     def post_cfg_function(args):
@@ -1174,7 +1176,7 @@ def sample_dpmpp_2s_ancestral_cfg_pp(model, x, sigmas, extra_args=None, callback
             x = (sigma_fn(t_next) / sigma_fn(t)) * (x + (denoised - temp[0])) - (-h).expm1() * denoised_2
         # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1], i) * s_noise * sigma_up
     return x
 
 @torch.no_grad()
